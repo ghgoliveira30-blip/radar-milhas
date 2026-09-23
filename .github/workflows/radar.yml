@@ -1,0 +1,45 @@
+name: Radar de Milhas
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: radar
+  cancel-in-progress: false
+
+jobs:
+  varrer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependências
+        run: pip install --quiet feedparser requests
+
+      - name: Varrer as fontes e avisar no Telegram
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python3 scripts/radar.py publish --dados dados.json --estado estado.json --hours 36
+
+      - name: Publicar o resultado
+        run: |
+          git config user.name  "radar-bot"
+          git config user.email "radar-bot@users.noreply.github.com"
+          git add dados.json estado.json
+          if git diff --staged --quiet; then
+            echo "nada mudou nesta rodada"
+          else
+            git commit -m "radar: $(date -u '+%Y-%m-%d %H:%M UTC')"
+            git push
+          fi
