@@ -426,6 +426,11 @@ def fetch_secretflying(name, url, lang, region, cutoff):
 FETCHERS = {"rss": fetch_rss, "tg": fetch_tg, "sf": fetch_secretflying}
 
 
+# O Reddit bloqueia os IPs de datacenter do GitHub (403/429 em toda rodada).
+# No navegador do usuario eles funcionam, entao ficam so no app e saem do robo.
+SO_NO_NAVEGADOR = {"r/awardtravel", "r/Flights", "r/travelhacking"}
+
+
 def run(hours, known):
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     items, errors = [], []
@@ -437,8 +442,9 @@ def run(hours, known):
         except Exception as exc:
             return name, [], f"{type(exc).__name__}: {exc}"[:120]
 
+    fontes = [f for f in SOURCES if f[0] not in SO_NO_NAVEGADOR]
     with cf.ThreadPoolExecutor(max_workers=12) as ex:
-        for name, got, err in ex.map(one, SOURCES):
+        for name, got, err in ex.map(one, fontes):
             if err:
                 errors.append({"source": name, "error": err})
             items.extend(got)
@@ -583,6 +589,9 @@ def cmd_prune(a):
 import os as _os
 
 
+MAX_POR_RODADA = 6   # teto de mensagens por rodada, para nao virar spam
+
+
 def _tg(texto):
     """Manda uma mensagem no Telegram. Sem segredo configurado, nao faz nada."""
     token = _os.environ.get("TELEGRAM_TOKEN", "").strip()
@@ -609,6 +618,11 @@ def _escapa(t):
 
 def cmd_publish(a):
     """Varre, atualiza dados.json e avisa no Telegram o que for boa promocao."""
+    # ping de teste: prova que token e chat_id estao certos, mesmo sem promocao nova
+    if _os.environ.get("TELEGRAM_PING", "").lower() == "true":
+        ok = _tg("✅ Radar de Milhas: teste de conexão. Se você recebeu isto, "
+                 "o bot está configurado corretamente.")
+        print("ping de teste:", "enviado" if ok else "FALHOU (veja a linha ! telegram acima)")
     # 1. o que ja existe
     try:
         atual = json.load(open(a.dados))
@@ -645,18 +659,26 @@ def cmd_publish(a):
     final.sort(key=lambda i: i.get("published", ""), reverse=True)
     final = final[:a.max_items]
 
+    ativas = len(SOURCES) - len(SO_NO_NAVEGADOR)
     saida = {
         "atualizado": datetime.now(timezone.utc).isoformat(),
-        "fontes_ok": len(SOURCES) - len(errors),
-        "fontes_total": len(SOURCES),
+        "fontes_ok": ativas - len(errors),
+        "fontes_total": ativas,
         "falhas": [e["source"] for e in errors],
         "items": final,
     }
     json.dump(saida, open(a.dados, "w"), ensure_ascii=False, separators=(",", ":"))
 
     # 4. avisa so o que e boa promocao e ainda nao foi avisado
-    alertas = [i for i in novos if i.get("alert") and i["id"] not in enviados]
-    alertas.sort(key=lambda i: (0 if i.get("erro_tarifa") else 1, i.get("published", "")))
+    # Candidato a alerta = qualquer item ativo e recente que ainda nao foi avisado,
+    # mesmo que ja estivesse no dados.json de rodadas anteriores. Assim, se uma
+    # rodada falhar ou o estado for zerado, o radar se recupera sozinho.
+    janela = (datetime.now(timezone.utc) - timedelta(hours=a.alert_hours)).isoformat()
+    alertas = [i for i in final
+               if i.get("alert") and i.get("published", "") > janela
+               and i["id"] not in enviados]
+    alertas.sort(key=lambda i: (0 if i.get("erro_tarifa") else 1, i.get("published", "")),
+                 reverse=False)
 
     # A mesma promocao sai em 3 ou 4 blogs. Para bonus, a identidade e
     # programa + percentual: avisa uma vez e ignora as repetições por 48h.
@@ -683,7 +705,7 @@ def cmd_publish(a):
         unicos.append(i)
     alertas = unicos
     estado["assuntos"] = assuntos
-    for i in alertas[:8]:
+    for i in alertas[:MAX_POR_RODADA]:
         marca = "🚨 ERRO DE TARIFA" if i.get("erro_tarifa") else "🔥"
         linhas = [f"{marca} <b>{_escapa(i['title'][:180])}</b>"]
         det = [i["source"]]
@@ -698,9 +720,10 @@ def cmd_publish(a):
         _tg("\n".join(linhas))
         enviados.add(i["id"])
 
-    if len(alertas) > 8:
-        _tg(f"… e mais {len(alertas) - 8} promoções no radar.")
-        for i in alertas[8:]:
+    if len(alertas) > MAX_POR_RODADA:
+        _tg(f"… e mais {len(alertas) - MAX_POR_RODADA} promoções ativas no radar — "
+            f"abra o app para ver a lista completa.")
+        for i in alertas[MAX_POR_RODADA:]:
             enviados.add(i["id"])
 
     estado["enviados"] = list(enviados)[-3000:]
@@ -739,6 +762,7 @@ if __name__ == "__main__":
     s.add_argument("--hours", type=int, default=36)
     s.add_argument("--keep", type=int, default=14)
     s.add_argument("--max-items", type=int, default=700, dest="max_items")
+    s.add_argument("--alert-hours", type=int, default=48, dest="alert_hours")
     s.set_defaults(fn=cmd_publish)
 
     args = p.parse_args()
