@@ -2,11 +2,16 @@ name: Radar de Milhas
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
-  workflow_dispatch:
+    - cron: "*/30 * * * *"   # a cada 30 min (horário UTC; o GitHub às vezes atrasa alguns minutos)
+  workflow_dispatch:          # permite rodar na mão pelo botão "Run workflow"
+    inputs:
+      teste:
+        description: "Mandar um ping de teste no Telegram"
+        type: boolean
+        default: false
 
 permissions:
-  contents: write
+  contents: write             # o robô precisa disso para gravar o dados.json
 
 concurrency:
   group: radar
@@ -17,9 +22,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -30,6 +35,7 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_PING: ${{ inputs.teste }}
         run: python3 scripts/radar.py publish --dados dados.json --estado estado.json --hours 36
 
       - name: Publicar o resultado
